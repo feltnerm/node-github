@@ -3,6 +3,7 @@
 var error = require("./error");
 var Util = require("./util");
 var Url = require("url");
+var Fs = require("fs");
 
 /** section: github
  * class Client
@@ -177,8 +178,8 @@ var Client = module.exports = function(config) {
     this.debug = Util.isTrue(config.debug);
 
     this.version = config.version;
-    var cls = require("./api/v" + this.version);
-    this[this.version] = new cls(this);
+    var cls = Fs.readFileSync(__dirname + '/api/v3.0.0/routes.json', 'utf-8');
+    this[this.version] = JSON.parse(cls);
 
     var pathPrefix = "";
     // Check if a prefix is passed in the config and strip any leading or trailing slashes from it.
@@ -220,13 +221,17 @@ var Client = module.exports = function(config) {
      **/
     this.setupRoutes = function() {
         var self = this;
-        var api = this[this.version];
-        var routes = api.routes;
+        var routes = this[this.version];
         var defines = routes.defines;
         this.constants = defines.constants;
         this.requestHeaders = defines["request-headers"].map(function(header) {
             return header.toLowerCase();
         });
+
+       this.responseHeaders = defines["response-headers"].map(function(header) {
+            return header.toLowerCase();
+        });
+
         delete routes.defines;
 
         function trim(s) {
@@ -321,6 +326,7 @@ var Client = module.exports = function(config) {
                     parts.splice(0, 2);
                     var funcName = Util.toCamelCase(parts.join("-"));
 
+                    /**
                     if (!api[section]) {
                         throw new Error("Unsupported route section, not implemented in version " +
                             self.version + " for route '" + endPoint + "' and block: " +
@@ -334,6 +340,7 @@ var Client = module.exports = function(config) {
                             self.version + " for route '" + endPoint + "' and block: " +
                             JSON.stringify(block));
                     }
+                    */
 
                     if (!self[section]) {
                         self[section] = {};
@@ -351,14 +358,16 @@ var Client = module.exports = function(config) {
                         catch (ex) {
                             // when the message was sent to the client, we can
                             // reply with the error directly.
-                            api.sendError(ex, block, msg, callback);
+                            //api.sendError(ex, block, msg, callback);
+                            self.sendError(ex, block, msg, callback);
                             if (self.debug)
                                 Util.log(ex.message, "fatal");
                             // on error, there's no need to continue.
                             return;
                         }
 
-                        api[section][funcName].call(api, msg, block, callback);
+                        //api[section][funcName].call(api, msg, block, callback);
+                        self.handler(msg, block, callback);
                     };
                 }
                 else {
@@ -506,7 +515,8 @@ var Client = module.exports = function(config) {
                 ret = {};
             if (!ret.meta)
                 ret.meta = {};
-            ["x-ratelimit-limit", "x-ratelimit-remaining", "link"].forEach(function(header) {
+            //["x-ratelimit-limit", "x-ratelimit-remaining", "link"].forEach(function(header) {
+            responseHeaders.forEach(function(header){
                 if (res.headers[header])
                     ret.meta[header] = res.headers[header];
             });
@@ -634,7 +644,7 @@ var Client = module.exports = function(config) {
         var protocol = this.config.protocol || this.constants.protocol || "http";
         var host = this.config.host || this.constants.host;
         var port = this.config.port || this.constants.port || (protocol == "https" ? 443 : 80);
-        
+
         var proxyUrl;
         if (this.config.proxy !== undefined) {
             proxyUrl = this.config.proxy;
@@ -724,20 +734,21 @@ var Client = module.exports = function(config) {
 
         var callbackCalled = false
 
+        options.withCredentials = false;
         var req = require(protocol).request(options, function(res) {
             if (self.debug) {
                 console.log("STATUS: " + res.statusCode);
                 console.log("HEADERS: " + JSON.stringify(res.headers));
             }
-            res.setEncoding("utf8");
+            //res.setEncoding("utf8");
             var data = "";
             res.on("data", function(chunk) {
                 data += chunk;
             });
             res.on("error", function(err) {
                 if (!callbackCalled) {
-                   callbackCalled = true;   
-                   callback(err); 
+                   callbackCalled = true;
+                   callback(err);
                 }
             });
             res.on("end", function() {
@@ -783,5 +794,46 @@ var Client = module.exports = function(config) {
             req.write(query + "\n");
         }
         req.end();
+
     };
+
+    this.sendError = function(err, block, msg, callback) {
+        if (this.debug)
+            Util.log(err, block, msg.user, "error");
+        if (typeof err == "string")
+            err = new error.InternalServerError(err);
+        if (callback)
+            callback(err);
+    };
+
+    this.handler = function(msg, block, callback) {
+        var self = this;
+        this.httpSend(msg, block, function(err, res) {
+            if (err)
+                return self.sendError(err, msg, null, callback);
+
+            var ret;
+            try {
+                ret = res.data && JSON.parse(res.data);
+            }
+            catch (ex) {
+                if (callback)
+                    callback(new error.InternalServerError(ex.message), res);
+                return;
+            }
+
+            if (!ret) {
+                ret = {};
+            }
+            ret.meta = {};
+            self.responseHeaders.forEach(function(header) {
+                if (res.headers[header]) {
+                    ret.meta[header] = res.headers[header];
+                }
+            });
+
+            if (callback)
+                callback(null, ret);
+        });
+    }
 }).call(Client.prototype);
