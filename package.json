@@ -20,7 +20,7 @@
         "optimist": "~0.6.0",
         "mocha": "~1.13.0"
     },
-    "main" : ".",
+    "main": "index.js",
     "scripts": {
         "test": "node ./test/all.js"
     },
